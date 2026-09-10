@@ -1,0 +1,8 @@
+#pragma once
+
+#define MQTT_USERNAME  "car_c7c417528511"
+#define MQTT_PASSWORD  "f16c9052b2e6c4f2f12754840daaa5a9:b36100e82f3e50b780c4621e08351c49e4a448acf3d490db07b9bd377b32eeaa8a32165d838162ccc137960fc81f6f72"
+#define MQTT_URL       "ec9b13175461426b948434e7e60198a7.s1.eu.hivemq.cloud"
+#define MQTT_PORT      8883
+#define MQTT_TOPIC     "cars/b9422bd0-4036-4fe5-94a2-13554af237c6"
+#define MQTT_CLIENT_ID "b9422bd0-4036-4fe5-94a2-13554af237c6"
