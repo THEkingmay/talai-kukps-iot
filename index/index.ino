@@ -6,6 +6,7 @@
 #define MODEM_RX_PIN      16
 #define MODEM_PWRKEY_PIN  4
 #define MODEM_BAUDRATE    115200
+#define LED_BLUE_PIN      2     // Built-in blue LED บน ESP32
 
 HardwareSerial SerialAT(2);
 
@@ -109,17 +110,6 @@ bool connectMQTT() {
   Serial.println("[MQTT] เชื่อมต่อล้มเหลว!");
   return false;
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// อ่านพิกัด GPS จากโมดูล — คืนค่า true ถ้า lock สัญญาณได้
-//
-// Response format ของ A7680C (+CGNSSINFO):
-//   +CGNSSINFO: <mode>,<gps_sat>,<glo_sat>,<bd_sat>,<lat>,<N/S>,<lng>,<E/W>,
-//               <date>,<time>,<alt>,<speed>,<course>,<PDOP>,<HDOP>,<VDOP>
-//
-// lat/lng อยู่ใน format DDMM.MMMM (Degrees + Minutes)
-// mode != 0 หมายถึง lock ได้ (mode อาจเป็น 1, 2, 3 ขึ้นกับประเภท fix)
-// ──────────────────────────────────────────────────────────────────────────────
 bool getGPS(float &lat, float &lng) {
   String res = sendAT("AT+CGNSSINFO", 3000);
 
@@ -135,12 +125,13 @@ bool getGPS(float &lat, float &lng) {
   data.trim();
 
   // แยก fields ด้วย comma
-  // fields: [0]=mode [1]=gps_sat [2]=glo_sat [3]=bd_sat
-  //         [4]=lat  [5]=N/S     [6]=lng      [7]=E/W ...
-  String fields[10];
+  // จาก Log รูปแบบคือ: 3,12,08,01,,14.0251942,N,99.9747162,E,...
+  // [0]=mode [1]=gps_sat [2]=glo_sat [3]=bd_sat [4]=gal_sat (มักจะว่าง)
+  // [5]=lat  [6]=N/S     [7]=lng      [8]=E/W ...
+  String fields[12];
   int fieldCount = 0;
   int start = 0;
-  for (int i = 0; i <= (int)data.length() && fieldCount < 10; i++) {
+  for (int i = 0; i <= (int)data.length() && fieldCount < 12; i++) {
     if (i == (int)data.length() || data[i] == ',') {
       String f = data.substring(start, i);
       f.trim();
@@ -149,7 +140,7 @@ bool getGPS(float &lat, float &lng) {
     }
   }
 
-  if (fieldCount < 8) {
+  if (fieldCount < 9) {
     Serial.println("[GPS] parse ล้มเหลว — fields ไม่ครบ");
     return false;
   }
@@ -161,20 +152,18 @@ bool getGPS(float &lat, float &lng) {
     return false;
   }
 
-  // lat/lng ว่างเปล่า = ยังไม่มีข้อมูล
-  if (fields[4].length() == 0 || fields[6].length() == 0) {
+  // ตำแหน่งจริงของ lat/lng คือ index 5 และ 7
+  if (fields[5].length() == 0 || fields[7].length() == 0) {
     Serial.println("[GPS] lat/lng ว่างเปล่า");
     return false;
   }
 
-  // แปลง DDMM.MMMM → Decimal Degrees
-  float rawLat = fields[4].toFloat();
-  float rawLng = fields[6].toFloat();
-  lat = (int)(rawLat / 100) + fmod(rawLat, 100.0f) / 60.0f;
-  lng = (int)(rawLng / 100) + fmod(rawLng, 100.0f) / 60.0f;
+  // ข้อมูลที่ส่งมาเป็น Decimal Degrees (DD.DDDDDD) อยู่แล้ว ไม่ต้องหาร 60
+  lat = fields[5].toFloat();
+  lng = fields[7].toFloat();
 
-  if (fields[5] == "S") lat = -lat;
-  if (fields[7] == "W") lng = -lng;
+  if (fields[6] == "S") lat = -lat;
+  if (fields[8] == "W") lng = -lng;
 
   Serial.printf("[GPS] mode=%d, lat=%.5f, lng=%.5f\n", mode, lat, lng);
   return true;
@@ -211,6 +200,10 @@ bool publishLocation(float lat, float lng, const char *status) {
 void setup() {
   Serial.begin(115200);
   SerialAT.begin(MODEM_BAUDRATE, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
+
+  // ตั้งค่าขา LED
+  pinMode(LED_BLUE_PIN, OUTPUT);
+  digitalWrite(LED_BLUE_PIN, LOW);  // เริ่มต้นดับไฟ
 
   Serial.println("\n========================================");
   Serial.println("   A7680C GPS + MQTT Test");
@@ -257,8 +250,11 @@ void loop() {
     } else {
       float lat, lng;
       if (getGPS(lat, lng)) {
+        digitalWrite(LED_BLUE_PIN, HIGH);  // lock ได้ → เปิดไฟสีฟ้า
         bool ok = publishLocation(lat, lng, "active");
         Serial.println(ok ? "[MQTT] Publish สำเร็จ" : "[MQTT] Publish ล้มเหลว");
+      } else {
+        digitalWrite(LED_BLUE_PIN, LOW);   // lock ไม่ได้ → ดับไฟ
       }
     }
   }
