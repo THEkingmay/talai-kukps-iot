@@ -104,6 +104,106 @@ bool isNetworkConnected() {
   return res.indexOf(",1") != -1 || res.indexOf(",5") != -1;
 }
 
+// ───────────────────────── GPS ─────────────────────────
+
+// เปิด GPS และรอจนโมดูลพร้อม (URC: +CGNSSPWR: READY!)
+// ต้องเรียกก่อนใช้ AT+CGNSSINFO ไม่งั้น module ยังไม่ boot เสร็จจะตอบ ERROR
+void enableGPS() {
+  Serial.println("[GPS] เปิด GPS module...");
+  String r = sendAT("AT+CGNSSPWR=1", 3000);
+
+  if (r.indexOf("OK") == -1) {
+    Serial.println("[GPS] AT+CGNSSPWR=1 ล้มเหลว");
+    return;
+  }
+
+  // รอ URC "+CGNSSPWR: READY!" — บอกว่า GPS module boot เสร็จและพร้อมใช้งาน
+  // ถ้าไม่รอ แล้วรีบส่ง AT+CGNSSINFO จะได้ ERROR
+  Serial.println("[GPS] รอ GPS module พร้อม (+CGNSSPWR: READY!)...");
+  String urc = "";
+  uint32_t start = millis();
+  while (millis() - start < 15000) {
+    while (SerialAT.available()) {
+      char c = SerialAT.read();
+      urc += c;
+      Serial.write(c);
+    }
+    if (urc.indexOf("+CGNSSPWR: READY") != -1) {
+      Serial.println("[GPS] GPS module พร้อมแล้ว ✓");
+      return;
+    }
+    delay(10);
+  }
+  Serial.println("[GPS] หมดเวลารอ READY — จะพยายามใช้งานต่อไป");
+}
+
+bool getGPS(float &lat, float &lng) {
+  String res = sendAT("AT+CGNSSINFO", 3000);
+
+  int idx = res.indexOf("+CGNSSINFO:");
+  if (idx == -1) {
+    // ERROR = GPS module ยังไม่ ready หรือ command ไม่รองรับ
+    Serial.println("[GPS] ไม่มี response (+CGNSSINFO ตอบ ERROR)");
+    return false;
+  }
+
+  String data = res.substring(idx + 11);
+  data.trim();
+
+  // กรณีค่าว่างทุกตำแหน่ง เช่น "+CGNSSINFO: ,,,,,,,,"
+  // = GPS module พร้อมแล้ว แต่ยังหาดาวเทียมไม่เจอ (ต้องอยู่กลางแจ้ง)
+  bool allEmpty = true;
+  for (int i = 0; i < (int)data.length(); i++) {
+    if (data[i] != ',' && data[i] != ' ' && data[i] != '\r' && data[i] != '\n') {
+      allEmpty = false;
+      break;
+    }
+  }
+  if (allEmpty) {
+    Serial.println("[GPS] ยังไม่ lock ดาวเทียม (รอสักครู่ / ต้องอยู่กลางแจ้ง)");
+    return false;
+  }
+
+  // รูปแบบ: mode,gps_sat,glo_sat,bd_sat,gal_sat,lat,N/S,lng,E/W,...
+  String fields[12];
+  int fieldCount = 0;
+  int start = 0;
+  for (int i = 0; i <= (int)data.length() && fieldCount < 12; i++) {
+    if (i == (int)data.length() || data[i] == ',') {
+      String f = data.substring(start, i);
+      f.trim();
+      fields[fieldCount++] = f;
+      start = i + 1;
+    }
+  }
+
+  if (fieldCount < 9) {
+    Serial.println("[GPS] parse ล้มเหลว — fields ไม่ครบ");
+    return false;
+  }
+
+  int mode = fields[0].toInt();
+  if (mode == 0) {
+    Serial.println("[GPS] ยังไม่ได้ lock สัญญาณ...");
+    return false;
+  }
+
+  if (fields[5].length() == 0 || fields[7].length() == 0) {
+    Serial.println("[GPS] lat/lng ว่างเปล่า");
+    return false;
+  }
+
+  // เป็น Decimal Degrees อยู่แล้ว ไม่ต้องหาร 60
+  lat = fields[5].toFloat();
+  lng = fields[7].toFloat();
+
+  if (fields[6] == "S") lat = -lat;
+  if (fields[8] == "W") lng = -lng;
+
+  Serial.printf("[GPS] mode=%d, lat=%.5f, lng=%.5f\n", mode, lat, lng);
+  return true;
+}
+
 // ───────────────────────── MQTT ─────────────────────────
 
 // เคลียร์สถานะ MQTT ทั้งหมดให้เริ่มใหม่ได้สะอาด
@@ -182,60 +282,6 @@ bool connectMQTT() {
   return false;
 }
 
-// ───────────────────────── GPS ─────────────────────────
-
-bool getGPS(float &lat, float &lng) {
-  String res = sendAT("AT+CGNSSINFO", 3000);
-
-  int idx = res.indexOf("+CGNSSINFO:");
-  if (idx == -1) {
-    Serial.println("[GPS] ไม่มี response");
-    return false;
-  }
-
-  String data = res.substring(idx + 11);
-  data.trim();
-
-  // รูปแบบ: mode,gps_sat,glo_sat,bd_sat,gal_sat,lat,N/S,lng,E/W,...
-  String fields[12];
-  int fieldCount = 0;
-  int start = 0;
-  for (int i = 0; i <= (int)data.length() && fieldCount < 12; i++) {
-    if (i == (int)data.length() || data[i] == ',') {
-      String f = data.substring(start, i);
-      f.trim();
-      fields[fieldCount++] = f;
-      start = i + 1;
-    }
-  }
-
-  if (fieldCount < 9) {
-    Serial.println("[GPS] parse ล้มเหลว — fields ไม่ครบ");
-    return false;
-  }
-
-  int mode = fields[0].toInt();
-  if (mode == 0) {
-    Serial.println("[GPS] ยังไม่ได้ lock สัญญาณ...");
-    return false;
-  }
-
-  if (fields[5].length() == 0 || fields[7].length() == 0) {
-    Serial.println("[GPS] lat/lng ว่างเปล่า");
-    return false;
-  }
-
-  // เป็น Decimal Degrees อยู่แล้ว ไม่ต้องหาร 60
-  lat = fields[5].toFloat();
-  lng = fields[7].toFloat();
-
-  if (fields[6] == "S") lat = -lat;
-  if (fields[8] == "W") lng = -lng;
-
-  Serial.printf("[GPS] mode=%d, lat=%.5f, lng=%.5f\n", mode, lat, lng);
-  return true;
-}
-
 // ───────────────────────── Publish ─────────────────────────
 
 bool publishLocation(float lat, float lng, const char *status) {
@@ -277,7 +323,7 @@ void setup() {
   digitalWrite(LED_BLUE_PIN, LOW);
 
   Serial.println("\n========================================");
-  Serial.println("   A7680C GPS + MQTT Test (EMQX Cloud)");
+  Serial.println("   A7680C GPS + MQTT (EMQX Cloud)");
   Serial.println("========================================");
 
   powerOnModem();
@@ -292,9 +338,9 @@ void setup() {
     delay(2000);
   }
 
-  // เปิด GPS ก่อน เพื่อให้เริ่มค้นหาดาวเทียมระหว่างต่อ MQTT
-  sendAT("AT+CGNSSPWR=1", 3000);
-  Serial.println("[GPS] เปิด GPS แล้ว รอ lock สัญญาณ...");
+  // เปิด GPS และรอ module พร้อม (+CGNSSPWR: READY!) ก่อนทำอย่างอื่น
+  // สำคัญ: ถ้าไม่รอ READY แล้วส่ง AT+CGNSSINFO ทันทีจะได้ ERROR
+  enableGPS();
 
   connectMQTT();
 }
@@ -318,8 +364,8 @@ void loop() {
     }
   }
 
-  // ── อ่าน GPS และ Publish ทุก 3 วินาที ──
-  if (millis() - lastPub > 3000) {
+  // ── อ่าน GPS และ Publish ทุก 1 วินาที ──
+  if (millis() - lastPub > 1000) {
     lastPub = millis();
 
     if (!mqttReady) {
