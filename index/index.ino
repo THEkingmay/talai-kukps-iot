@@ -537,8 +537,8 @@ void loop() {
     }
   }
 
-  // ── อ่าน GPS และ Publish ทุก 3 วินาที ──
-  if (millis() - lastPub > 3000) {
+  // ── อ่าน GPS และ Publish ทุก 1 วินาที ──
+  if (millis() - lastPub > 1000) {
     lastPub = millis();
 
     if (!mqttReady) {
